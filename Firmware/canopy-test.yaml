@@ -1,0 +1,97 @@
+esphome:
+  name: canopy-test
+  friendly_name: Canopy test
+
+  libraries:
+    # Wire library is needed for the i2c protocol
+    - "Wire"
+  on_boot: 
+    then:
+      # On boot, give power to the 3 distinct sensors (light, temp, soil moisture)
+      - output.turn_on: ens160_en
+      - output.turn_on: bme_en
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "3BAJV3KoaPcjRewPf0EPooFFTH1RCdsxCZICO7ZjhF4="
+
+ota:
+  - platform: esphome
+    password: "3ba8733d4dc54bb17bdfef4d3f540869"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Canopy-Test Fallback Hotspot"
+    password: "DirpKzoIq7Gb"
+
+captive_portal:
+
+# Example configuration entry for SprigC3
+i2c:
+- id: bus_a
+  sda: 2
+  scl: 3
+  scan: True
+
+# Decalaration of the GPIOs that give power to the 3 distinct sensors of the PlantCell.
+output:
+  - platform: gpio
+    pin: 5
+    id: bme_en
+
+  - platform: gpio
+    pin: 7
+    id: ens160_en
+
+sensor:
+
+  - platform: max17043
+    id: max17043_id
+    i2c_id: bus_a
+    battery_voltage:
+      name: "Battery Voltage"
+      accuracy_decimals: 1
+    battery_level:
+      name: "Battery"
+      accuracy_decimals: 0
+    update_interval: 1min
+  
+  - platform: bme280_i2c
+    temperature:
+      name: "BME280 Temperature"
+      id: bme_temp
+    pressure:
+      name: "BME280 Pressure"
+      id: bme_pres
+    humidity:
+      name: "BME280 Humidity"
+      id: bme_hum
+    update_interval: 1min
+    address: 0x76
+
+  - platform: ens160_i2c
+    eco2:
+      name: "ENS160 eCO2"
+    tvoc:
+      name: "ENS160 Total Volatile Organic Compounds"
+    aqi:
+      id: ens160_air_quality_index
+      name: "ENS160 Air Quality Index"
+    update_interval: 1min
+    address: 0x53
+    compensation:
+      temperature: bme_temp
+      humidity: bme_hum
