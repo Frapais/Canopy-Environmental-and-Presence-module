@@ -69,7 +69,8 @@ Canopy uses the following Sprig-C3 pins. **Every other pin on the headers is pas
 | 20 / 21 | HLK-LD2412 **RX / TX** <!-- TODO: confirm orientation --> |
 | 3V3, GND | Module supply |
 
-![Sprig-C3 pinout](PCB/Images/sprig-c3-pinout.png)
+<img src="https://github.com/Frapais/Sprig-C3/blob/main/PCB/Screenshot%20from%202024-04-12%2010-49-21.png" alt="drawing" style="width:300px;"/>
+
 
 ### Strapping-pin note
 
@@ -95,11 +96,11 @@ Two things to keep in mind:
 
 ---
 
-## Real-time clock
+## Real-time clock (NOT implemented yet)
 
-Canopy carries an on-board RTC so the node can keep accurate time across deep-sleep cycles and power loss without a network round trip.
+Canopy carries an on-board RTC so the node can enter deep-sleep cycles that completely shut down the system, therefore achieving great battery life. <!-- TODO: solder the RTC and test its functionality -->
 
-The **RTC BYPASS** solder jumper on the underside of the board <!-- TODO: confirm default state and what bridging it does — e.g. "bridge to disconnect the RTC backup supply and eliminate its standby draw" -->.
+The **RTC BYPASS** solder jumper on the board.
 
 ---
 
