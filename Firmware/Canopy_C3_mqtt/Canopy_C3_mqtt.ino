@@ -23,8 +23,11 @@
  *   ArduinoJson  (v6.x)                 by Benoit Blanchon
  *   Adafruit MAX1704X                   by Adafruit
  *   ClosedCube HDC1080                  by ClosedCube
- *   SparkFun Indoor Air Quality Sensor - ENS160
  *   SparkFun Ambient Light Sensor Arduino Library (VEML6030)
+ *
+ *   The ENS160 is driven by direct register access (see the ENS160 section
+ *   below) rather than through a library, so its full status word can be
+ *   reported instead of a pass/fail boolean.
  *
  * Board: "ESP32C3 Dev Module" (esp32 core 2.0.x / 3.x)
  */
@@ -39,7 +42,6 @@
 
 #include "Adafruit_MAX1704X.h"
 #include "ClosedCube_HDC1080.h"
-#include "SparkFun_ENS160.h"
 #include "SparkFun_VEML6030_Ambient_Light_Sensor.h"
 
 // ------------------------------------------------------------------
@@ -66,6 +68,10 @@
 // Set this to false only if you switch to a long deep-sleep cycle.
 #define KEEP_SENSORS_POWERED   true
 
+// Print the full ENS160 register dump on every publish cycle.
+// Set to false once the sensor is behaving.
+#define ENS_VERBOSE            true
+
 const char *AP_SSID = "Canopy-Setup";
 const char *AP_PASS = "";          // open AP; set an 8+ char password to secure it
 const char *FW_VERSION = "1.0";
@@ -75,7 +81,6 @@ const char *FW_VERSION = "1.0";
 // ------------------------------------------------------------------
 Adafruit_MAX17048   maxlipo;
 ClosedCube_HDC1080  hdc1080;
-SparkFun_ENS160     ens160;
 SparkFun_Ambient_Light veml(VEML6030_ADDR);
 
 WiFiClient   wifiClient;
@@ -111,6 +116,184 @@ void sensorsPower(bool on) {
 }
 
 // ------------------------------------------------------------------
+//  ENS160 register-level access
+//  Datasheet register map, all multi-byte values little-endian.
+// ------------------------------------------------------------------
+#define ENS_PART_ID   0x00   // 2 bytes, should read 0x0160
+#define ENS_OPMODE    0x10   // 0x00 deep sleep, 0x01 idle, 0x02 standard, 0xF0 reset
+#define ENS_CONFIG    0x11
+#define ENS_TEMP_IN   0x13   // 2 bytes, (degC + 273.15) * 64
+#define ENS_RH_IN     0x15   // 2 bytes, %RH * 512
+#define ENS_STATUS    0x20
+#define ENS_DATA_AQI  0x21
+#define ENS_DATA_TVOC 0x22   // 2 bytes, ppb
+#define ENS_DATA_ECO2 0x24   // 2 bytes, ppm
+#define ENS_DATA_T    0x30   // 2 bytes, compensation readback
+#define ENS_DATA_RH   0x32   // 2 bytes, compensation readback
+
+uint8_t ensAddr = ENS160_ADDR;
+
+bool ensAcks(uint8_t addr) {
+  Wire.beginTransmission(addr);
+  return Wire.endTransmission() == 0;
+}
+
+bool ensRead(uint8_t reg, uint8_t *buf, uint8_t len) {
+  Wire.beginTransmission(ensAddr);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((int)ensAddr, (int)len) != (int)len) return false;
+  for (uint8_t i = 0; i < len; i++) buf[i] = Wire.read();
+  return true;
+}
+
+uint8_t ensRead8(uint8_t reg) {
+  uint8_t v = 0;
+  ensRead(reg, &v, 1);
+  return v;
+}
+
+uint16_t ensRead16(uint8_t reg) {
+  uint8_t b[2] = {0, 0};
+  ensRead(reg, b, 2);
+  return (uint16_t)b[0] | ((uint16_t)b[1] << 8);
+}
+
+bool ensWrite8(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(ensAddr);
+  Wire.write(reg);
+  Wire.write(val);
+  return Wire.endTransmission() == 0;
+}
+
+bool ensWrite16(uint8_t reg, uint16_t val) {
+  Wire.beginTransmission(ensAddr);
+  Wire.write(reg);
+  Wire.write((uint8_t)(val & 0xFF));
+  Wire.write((uint8_t)(val >> 8));
+  return Wire.endTransmission() == 0;
+}
+
+// Feed temperature / humidity to the ENS160 for gas compensation.
+void ensSetCompensation(float tempC, float rhPct) {
+  ensWrite16(ENS_TEMP_IN, (uint16_t)((tempC + 273.15f) * 64.0f));
+  ensWrite16(ENS_RH_IN,   (uint16_t)(rhPct * 512.0f));
+}
+
+const char *ensValidityText(uint8_t v) {
+  switch (v) {
+    case 0: return "normal";
+    case 1: return "warm-up";
+    case 2: return "initial start-up";
+    default: return "invalid output";
+  }
+}
+
+// Put the part into standard measuring mode from whatever state it is in.
+bool ensStartStandard() {
+  ensWrite8(ENS_OPMODE, 0xF0);   // reset
+  delay(20);
+  ensWrite8(ENS_OPMODE, 0x01);   // idle
+  delay(20);
+  bool ok = ensWrite8(ENS_OPMODE, 0x02);   // standard
+  delay(50);
+  return ok && ensRead8(ENS_OPMODE) == 0x02;
+}
+
+void ens160Diagnostics() {
+  Serial.println(F("---------- ENS160 diagnostics ----------"));
+  Serial.print(F("  uptime           : "));
+  Serial.print(millis() / 1000);
+  Serial.println(F(" s since boot"));
+
+  // 1. Does anything answer on the bus?
+  if (!ensAcks(ensAddr)) {
+    Serial.print(F("  I2C              : NO ACK at 0x"));
+    Serial.println(ensAddr, HEX);
+    uint8_t alt = (ensAddr == 0x53) ? 0x52 : 0x53;
+    Serial.print(F("  alternate 0x"));
+    Serial.print(alt, HEX);
+    Serial.println(ensAcks(alt) ? F("     : RESPONDS -> set ENS160_ADDR to this")
+                                : F("     : no response either"));
+    Serial.println(F("  => The chip is not on the bus. Check that GPIO0 is high,"));
+    Serial.println(F("     that the 3V3 rail at the sensor is really 3.3 V under"));
+    Serial.println(F("     load, and that SDA/SCL pull-ups are present."));
+    Serial.println(F("----------------------------------------"));
+    return;
+  }
+  Serial.print(F("  I2C              : ACK at 0x"));
+  Serial.println(ensAddr, HEX);
+
+  // 2. Is it actually an ENS160?
+  uint16_t pid = ensRead16(ENS_PART_ID);
+  Serial.print(F("  PART_ID          : 0x"));
+  Serial.print(pid, HEX);
+  Serial.println(pid == 0x0160 ? F("  (correct)")
+                               : F("  (EXPECTED 0x160 - wrong device or bad reads)"));
+
+  // 3. What mode is it in?
+  uint8_t opmode = ensRead8(ENS_OPMODE);
+  Serial.print(F("  OPMODE           : 0x"));
+  Serial.print(opmode, HEX);
+  switch (opmode) {
+    case 0x00: Serial.println(F("  DEEP SLEEP - not measuring")); break;
+    case 0x01: Serial.println(F("  IDLE - not measuring")); break;
+    case 0x02: Serial.println(F("  STANDARD - measuring")); break;
+    case 0xF0: Serial.println(F("  RESET")); break;
+    default:   Serial.println(F("  unexpected value")); break;
+  }
+
+  // 4. Decode the status word.
+  uint8_t st = ensRead8(ENS_STATUS);
+  uint8_t validity = (st >> 2) & 0x03;
+  Serial.print(F("  STATUS           : 0x"));
+  if (st < 0x10) Serial.print('0');
+  Serial.println(st, HEX);
+  Serial.print(F("    STATAS (running) : ")); Serial.println((st & 0x80) ? F("yes") : F("NO"));
+  Serial.print(F("    STATER (error)   : ")); Serial.println((st & 0x40) ? F("YES") : F("no"));
+  Serial.print(F("    VALIDITY         : ")); Serial.print(validity);
+  Serial.print(F(" = ")); Serial.println(ensValidityText(validity));
+  Serial.print(F("    NEWDAT           : ")); Serial.println((st & 0x02) ? F("yes") : F("no"));
+  Serial.print(F("    NEWGPR           : ")); Serial.println((st & 0x01) ? F("yes") : F("no"));
+
+  // 5. Raw measurement registers, regardless of NEWDAT.
+  Serial.print(F("  DATA_AQI         : ")); Serial.println(ensRead8(ENS_DATA_AQI) & 0x07);
+  Serial.print(F("  DATA_TVOC        : ")); Serial.print(ensRead16(ENS_DATA_TVOC)); Serial.println(F(" ppb"));
+  Serial.print(F("  DATA_ECO2        : ")); Serial.print(ensRead16(ENS_DATA_ECO2)); Serial.println(F(" ppm"));
+
+  // 6. Confirm the compensation values actually landed.
+  uint16_t rawT = ensRead16(ENS_DATA_T);
+  uint16_t rawH = ensRead16(ENS_DATA_RH);
+  Serial.print(F("  comp readback    : "));
+  Serial.print(rawT / 64.0f - 273.15f, 1); Serial.print(F(" C, "));
+  Serial.print(rawH / 512.0f, 1); Serial.println(F(" %RH"));
+
+  // 7. Plain-language conclusion.
+  Serial.print(F("  => "));
+  if (st == 0x00 || st == 0xFF) {
+    Serial.println(F("Status reads all-zero/all-ones: the chip acknowledges its"));
+    Serial.println(F("     address but is not responding properly. Almost always a"));
+    Serial.println(F("     power problem - see the GPIO0 note in the README."));
+  } else if (opmode != 0x02) {
+    Serial.println(F("Not in STANDARD mode, so it will never produce data."));
+    Serial.println(F("     The mode write was lost, usually because the rail dropped."));
+  } else if (st & 0x40) {
+    Serial.println(F("Error flag set. Power-cycle GPIO0 and re-check."));
+  } else if (validity == 3) {
+    Serial.println(F("Invalid output. Usually a brown-out mid-measurement or a"));
+    Serial.println(F("     sensor element fault."));
+  } else if (validity == 1) {
+    Serial.println(F("Warming up. Gas data becomes valid ~3 min after power-on."));
+  } else if (validity == 2) {
+    Serial.println(F("Initial start-up. This lasts up to 1 hour and happens once"));
+    Serial.println(F("     in the sensor's life. Values are published but coarse."));
+  } else {
+    Serial.println(F("Operating normally."));
+  }
+  Serial.println(F("----------------------------------------"));
+}
+
+// ------------------------------------------------------------------
 //  Sensor init
 // ------------------------------------------------------------------
 void initSensors() {
@@ -141,16 +324,23 @@ void initSensors() {
   }
 
   // --- ENS160 ---
-  ensOk = ens160.begin(ENS160_ADDR);
-  if (ensOk) {
-    ens160.setOperatingMode(SFE_ENS160_RESET);
-    delay(100);
-    ens160.setOperatingMode(SFE_ENS160_STANDARD);
-    delay(100);
-    Serial.println(F("ENS160 ready (3 min warm-up before valid gas data)."));
-  } else {
-    Serial.println(F("ENS160 not responding."));
+  // Probe the configured address, then the alternate one, so a mis-strapped
+  // ADDR pin shows up as a clear message rather than silence.
+  if (!ensAcks(ensAddr)) {
+    uint8_t alt = (ensAddr == 0x53) ? 0x52 : 0x53;
+    if (ensAcks(alt)) {
+      Serial.print(F("ENS160 answered at 0x"));
+      Serial.print(alt, HEX);
+      Serial.println(F(" instead of the configured address; using it."));
+      ensAddr = alt;
+    }
   }
+  ensOk = ensAcks(ensAddr);
+  if (ensOk) {
+    if (!ensStartStandard())
+      Serial.println(F("ENS160: could not enter STANDARD mode."));
+  }
+  ens160Diagnostics();
 }
 
 void i2cScan() {
@@ -333,6 +523,8 @@ void sendAllDiscovery() {
   publishDiscovery("eco2",        "eCO2",         "ppm", "carbon_dioxide", "measurement");
   publishDiscovery("tvoc",        "TVOC",         "ppb", "volatile_organic_compounds_parts", "measurement");
   publishDiscovery("aqi",         "Air Quality Index", nullptr, "aqi",  "measurement");
+  publishDiscovery("ens_status",  "Air Quality Sensor Status", nullptr, nullptr, nullptr,
+                   "mdi:chip", true);
   publishDiscovery("illuminance", "Illuminance",  "lx",  "illuminance",  "measurement");
   publishDiscovery("bat_voltage", "Battery Voltage", "V", "voltage",     "measurement", nullptr, true);
   publishDiscovery("bat_level",   "Battery",      "%",   "battery",      "measurement", nullptr, true);
@@ -345,7 +537,7 @@ void sendAllDiscovery() {
 //  Reading + publishing
 // ------------------------------------------------------------------
 void readAndPublish() {
-  StaticJsonDocument<384> doc;
+  StaticJsonDocument<512> doc;
 
   float tempC = NAN, rh = NAN;
 
@@ -360,17 +552,38 @@ void readAndPublish() {
 
   if (ensOk) {
     // feed the HDC1080 readings in as compensation before sampling
-    if (!isnan(tempC)) {
-      ens160.setTempCompensationCelsius(tempC);
-      ens160.setRHCompensationFloat(rh);
+    if (!isnan(tempC)) ensSetCompensation(tempC, rh);
+
+    uint8_t st       = ensRead8(ENS_STATUS);
+    uint8_t validity = (st >> 2) & 0x03;
+    bool    newData  = st & 0x02;
+    bool    statErr  = st & 0x40;
+
+    // If the part fell out of standard mode (a brown-out on the GPIO rail
+    // will do this) put it back, otherwise it silently stops measuring.
+    if (ensRead8(ENS_OPMODE) != 0x02) {
+      Serial.println(F("ENS160 left STANDARD mode - restarting it."));
+      ensStartStandard();
     }
-    if (ens160.checkDataStatus()) {
-      doc["eco2"] = ens160.getECO2();
-      doc["tvoc"] = ens160.getTVOC();
-      doc["aqi"]  = ens160.getAQI();
+
+    doc["ens_status"] = ensValidityText(validity);
+
+    if (validity == 3 || statErr) {
+      Serial.println(F("ENS160: output flagged invalid, values not published."));
     } else {
-      Serial.println(F("ENS160 data not ready (still warming up?)."));
+      // The data registers hold the last computed result even when NEWDAT
+      // is clear, so publish them rather than dropping the cycle entirely.
+      doc["eco2"] = ensRead16(ENS_DATA_ECO2);
+      doc["tvoc"] = ensRead16(ENS_DATA_TVOC);
+      doc["aqi"]  = ensRead8(ENS_DATA_AQI) & 0x07;
+      if (!newData)
+        Serial.println(F("ENS160: no fresh sample this cycle, repeating last values."));
     }
+
+    if (ENS_VERBOSE) ens160Diagnostics();
+  } else {
+    doc["ens_status"] = "not detected";
+    if (ENS_VERBOSE) ens160Diagnostics();
   }
 
   if (vemlOk) {
@@ -385,7 +598,7 @@ void readAndPublish() {
 
   doc["rssi"] = WiFi.RSSI();
 
-  char payload[384];
+  char payload[512];
   size_t n = serializeJson(doc, payload, sizeof(payload));
   mqtt.publish(stateTopic.c_str(), (const uint8_t *)payload, n, true);
 
