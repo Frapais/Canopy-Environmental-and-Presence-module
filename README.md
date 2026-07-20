@@ -31,8 +31,8 @@
 - Air temperature and relative humidity
 - Air quality: **AQI**, **eCO₂** and **TVOC**
 - Ambient light in lux
-- 24 GHz **mmWave human presence** detection, including stationary targets (TODO)
-- On-board **real-time clock** with a solder-jumper bypass (TODO)
+- 24 GHz **mmWave human presence** detection, including stationary targets (NOT implemented yet)
+- On-board **real-time clock** with a solder-jumper bypass (NOT implemented yet)
 - Independent **power gating** of every sensor via GPIO, for true low-power deep-sleep operation
 - Secondary **battery connector** passed through to the Sprig-C3
 - Stacks directly onto the Sprig-C3 / C6 headers — no wiring
@@ -120,9 +120,9 @@ The `Enclosure/` folder contains a two-part sensor housing and a matching ball-j
 | Setting | Recommendation |
 | --- | --- |
 | Material | PLA or PETG |
-| Layer height | 0.16–0.20 mm |
-| Walls | 3 perimeters |
-| Infill | 20% |
+| Layer height | 0.1-0.20 mm |
+| Walls | 2 perimeters |
+| Infill | 10% |
 | Supports | Not required for the body or lid; the ball joint prints best stem-up |
 
 The vented face of the lid must stay clear — it is the airflow path to the HDC1080 and ENS160. Do not fill it with supports or paint over it. The lid is deliberately thin in front of the mmWave module so the 24 GHz signal passes through; avoid metallic or carbon-filled filaments, which will block it.
@@ -141,7 +141,7 @@ Two paths are supported. ESPHome is the fastest way to get entities into Home As
 
 1. Plug the Canopy onto the Sprig-C3, then connect the Sprig-C3 to the machine running Home Assistant while holding **BOOT** (only needed the first time).
 2. In ESPHome, add a new device and pick **ESP32-C3**.
-3. Replace the generated YAML with the contents of [`Firmware/ESPHome/canopy.yaml`](Firmware/ESPHome/canopy.yaml).
+3. Replace the generated YAML with the contents of [`Firmware/canopy-test.yaml`](Firmware/canopy-test.yaml).
 4. Set `wifi_ssid` and `wifi_password` in your ESPHome `secrets.yaml`.
 5. Upload, selecting the port that appears as a **USB JTAG** device.
 6. Configure the newly discovered device from Home Assistant settings.
@@ -150,7 +150,7 @@ Two paths are supported. ESPHome is the fastest way to get entities into Home As
 
 **Requirements:** an MQTT broker (tested with Mosquitto) and the Home Assistant MQTT integration, plus the Arduino IDE.
 
-1. Open [`Firmware/MQTT/Canopy_C3_mqtt/Canopy_C3_mqtt.ino`](Firmware/MQTT/Canopy_C3_mqtt/Canopy_C3_mqtt.ino).
+1. Open [`Firmware/Canopy_C3_mqtt/Canopy_C3_mqtt.ino`](Firmware/Canopy_C3_mqtt/Canopy_C3_mqtt.ino).
 2. Install the required libraries from the Library Manager:
    - PubSubClient (Nick O'Leary)
    - ArduinoJson v6.x (Benoit Blanchon)
@@ -198,7 +198,7 @@ Canopy-Environmental-and-Presence-module/
 
 ## Availability
 
-Assembled Canopy modules and Sprig-C3 boards are available from [Tindie](https://www.tindie.com/stores/spriglabs/), [Lectronz](https://lectronz.com/), and the [Sprig Labs store](https://sprig-labs.com/store).
+Assembled Canopy modules and Sprig-C3 boards are available from [Tindie](https://www.tindie.com/products/spriglabs/canopy-smart-environmental-sensor/), [Lectronz](https://lectronz.com/products/canopy-smart-environmental-sensor), and the [Sprig Labs store](https://sprig-labs.com/canopy).
 
 ---
 
@@ -209,6 +209,7 @@ If you find this project useful, consider supporting its development:
 - [PayPal](https://www.paypal.com/paypalme/kostasparaskevas)
 - [Buy Me a Coffee](https://www.buymeacoffee.com/spriglabs)
 - Instagram: [@sprig_labs](https://www.instagram.com/sprig_labs/)
+- YouTube: [@sprig_labs](https://www.youtube.com/@sprig_labs)
 
 ---
 
